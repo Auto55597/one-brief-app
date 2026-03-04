@@ -1,0 +1,27 @@
+name: Global News Auto-Fetch
+
+on:
+  schedule:
+    - cron: '0 */3 * * *' # รันทุก 3 ชั่วโมง (เวลาสากล UTC)
+  workflow_dispatch: # ปุ่มกดรันเองเพื่อทดสอบ
+
+jobs:
+  update_news:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Libraries
+        run: pip install firebase-admin requests beautifulsoup4 lxml
+
+      - name: Run Fetch Script
+        env:
+          # เชื่อมต่อความลับจาก GitHub Settings เข้ากับโค้ด Python
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: python fetch_news.py
