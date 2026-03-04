@@ -54,29 +54,33 @@ CATEGORIES_CONFIG = {
     "World News": ["http://feeds.bbci.co.uk/news/world/rss.xml"]
 }
 
-# --- 5. ฟังก์ชันดึงภาพจริงจาก RSS ---
-def get_image_from_item(item, category):
+# --- 5. ฟังก์ชันดึงภาพ (ดึงจากข่าวจริง หรือสุ่มแบบไม่ซ้ำ) ---
+def get_image_from_item(item, category, title):
     image_url = None
     
-    # 1. ลองหาจาก <media:content> (พบบ่อยใน CNBC, BBC)
-    media_content = item.find('media:content') or item.find('content')
-    if media_content and media_content.get('url'):
-        image_url = media_content.get('url')
+    # 1. ลองหาจาก <media:content> หรือ <media:thumbnail>
+    media = item.find('media:content') or item.find('media:thumbnail') or item.find('content')
+    if media and media.get('url'):
+        image_url = media.get('url')
     
-    # 2. ถ้าไม่เจอ ลองหาจาก <enclosure> (พบบ่อยใน TechCrunch)
+    # 2. ถ้าไม่เจอ ลองหาจาก <enclosure>
     if not image_url:
         enclosure = item.find('enclosure')
         if enclosure and enclosure.get('url'):
             image_url = enclosure.get('url')
             
-    # 3. ถ้ายังไม่เจออีก ให้ใช้ภาพ Default สวยๆ ตามหมวดหมู่ (กันภาพซ้ำ)
+    # 3. ถ้ายังไม่เจออีก ให้ใช้ Unsplash พร้อมรหัส 'sig' จากชื่อข่าวเพื่อให้ภาพไม่ซ้ำ
     if not image_url:
-        defaults = {
-            "Business": "https://images.unsplash.com/photo-1460925895917-afdab827c52f?q=80&w=800",
-            "Tech": "https://images.unsplash.com/photo-1518770660439-4636190af475?q=80&w=800",
-            "World News": "https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=800"
+        # ล้างอักขระพิเศษออกจากชื่อข่าวเพื่อทำเป็น ID สุ่มภาพ
+        safe_title = re.sub(r'\W+', '', title[:15]) 
+        keywords = {
+            "Business": "business,finance",
+            "Tech": "technology,digital",
+            "World News": "news,city,global"
         }
-        image_url = defaults.get(category, "https://images.unsplash.com/photo-1504711434969-e33886168f5c?q=80&w=800")
+        query = keywords.get(category, "news")
+        # ใส่ &sig= เพื่อบังคับให้ Unsplash ส่งรูปที่ต่างกันมาให้ในแต่ละข่าว
+        image_url = f"https://source.unsplash.com/featured/?{query}&sig={safe_title}"
         
     return image_url
 
@@ -101,8 +105,8 @@ def fetch_and_upload():
                         raw_desc = item.description.text if item.description else ""
                         summary = ai_summarize(title, raw_desc)
                         
-                        # ดึงภาพจริง (NEW!)
-                        final_image_url = get_image_from_item(item, category)
+                        # ดึงภาพ (ส่ง title ไปด้วยเพื่อใช้สุ่มรูปไม่ซ้ำ)
+                        final_image_url = get_image_from_item(item, category, title)
                         
                         data = {
                             "title": title,
@@ -114,7 +118,10 @@ def fetch_and_upload():
                             "image_url": final_image_url
                         }
                         db.collection("news").add(data)
-                        print(f"✅ Added: {title[:50]}... (Image Found: {'Yes' if 'unsplash' not in final_image_url else 'Default'})")
+                        
+                        # พิมพ์บอกใน Log ว่าได้รูปมาจากไหน
+                        status = "Real Image" if "unsplash" not in final_image_url else "Random Unique"
+                        print(f"✅ Added: {title[:50]}... ({status})")
                     else:
                         print(f"⏩ Skipped: {title[:30]} (Duplicate)")
             except Exception as e:
