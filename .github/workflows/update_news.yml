@@ -24,4 +24,6 @@ jobs:
         env:
           # เชื่อมต่อความลับจาก GitHub Settings เข้ากับโค้ด Python
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          # เพิ่มบรรทัดนี้เพื่อให้ AI สรุปข่าวทำงานได้ไร้รอยต่อ
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} 
         run: python fetch_news.py
