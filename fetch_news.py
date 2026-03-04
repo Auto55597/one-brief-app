@@ -54,7 +54,7 @@ CATEGORIES_CONFIG = {
     "World News": ["http://feeds.bbci.co.uk/news/world/rss.xml"]
 }
 
-# --- 5. ฟังก์ชันดึงภาพ (ดึงจากข่าวจริง หรือสุ่มแบบไม่ซ้ำ) ---
+# --- 5. ฟังก์ชันดึงภาพ (เน้นความคมชัดและความไม่ซ้ำ) ---
 def get_image_from_item(item, category, title):
     image_url = None
     
@@ -69,18 +69,19 @@ def get_image_from_item(item, category, title):
         if enclosure and enclosure.get('url'):
             image_url = enclosure.get('url')
             
-    # 3. ถ้ายังไม่เจออีก ให้ใช้ Unsplash พร้อมรหัส 'sig' จากชื่อข่าวเพื่อให้ภาพไม่ซ้ำ
+    # 3. กรณีไม่เจอภาพจริง ให้ใช้ Unsplash แบบระบุความละเอียด (1080x720) และ Signature ไม่ให้ซ้ำ
     if not image_url:
-        # ล้างอักขระพิเศษออกจากชื่อข่าวเพื่อทำเป็น ID สุ่มภาพ
-        safe_title = re.sub(r'\W+', '', title[:15]) 
+        # สร้าง ID สุ่มจากชื่อข่าว (เอาเฉพาะตัวอักษร 15 ตัวแรก)
+        safe_sig = re.sub(r'\W+', '', title[:15]) 
         keywords = {
-            "Business": "business,finance",
-            "Tech": "technology,digital",
-            "World News": "news,city,global"
+            "Business": "business,finance,trading",
+            "Tech": "technology,coding,digital",
+            "World News": "world,map,city"
         }
         query = keywords.get(category, "news")
-        # ใส่ &sig= เพื่อบังคับให้ Unsplash ส่งรูปที่ต่างกันมาให้ในแต่ละข่าว
-        image_url = f"https://source.unsplash.com/featured/?{query}&sig={safe_title}"
+        
+        # เพิ่มขนาด 1080x720 เพื่อความคมชัด และพ่วง &sig เพื่อให้แต่ละข่าวได้ภาพต่างกัน
+        image_url = f"https://source.unsplash.com/featured/1080x720?{query}&sig={safe_sig}"
         
     return image_url
 
@@ -105,7 +106,7 @@ def fetch_and_upload():
                         raw_desc = item.description.text if item.description else ""
                         summary = ai_summarize(title, raw_desc)
                         
-                        # ดึงภาพ (ส่ง title ไปด้วยเพื่อใช้สุ่มรูปไม่ซ้ำ)
+                        # ดึงภาพ (ส่ง title ไปด้วยเพื่อสุ่มภาพไม่ซ้ำ)
                         final_image_url = get_image_from_item(item, category, title)
                         
                         data = {
@@ -119,9 +120,8 @@ def fetch_and_upload():
                         }
                         db.collection("news").add(data)
                         
-                        # พิมพ์บอกใน Log ว่าได้รูปมาจากไหน
-                        status = "Real Image" if "unsplash" not in final_image_url else "Random Unique"
-                        print(f"✅ Added: {title[:50]}... ({status})")
+                        source_type = "Real" if "unsplash" not in final_image_url else "Random HD"
+                        print(f"✅ Added: {title[:50]}... ({source_type})")
                     else:
                         print(f"⏩ Skipped: {title[:30]} (Duplicate)")
             except Exception as e:
