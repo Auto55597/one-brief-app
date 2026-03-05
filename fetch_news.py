@@ -17,7 +17,6 @@ if os.environ.get('FIREBASE_SERVICE_ACCOUNT'):
     cred = credentials.Certificate(cert_dict)
 else:
     # สำหรับรันในเครื่องคอมพิวเตอร์ (D:)
-    # ตรวจสอบว่าไฟล์ชื่อ serviceAccountKey.json อยู่ในโฟลเดอร์เดียวกับไฟล์นี้
     cred = credentials.Certificate("serviceAccountKey.json")
 
 if not firebase_admin._apps:
@@ -30,7 +29,9 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 # --- 2. ฟังก์ชัน AI สรุปข่าว ---
 def ai_summarize(title, raw_description):
     try:
-        prompt = f"Summarize this news into 1-2 concise, professional sentences for a business briefing. Title: {title}. Content: {raw_description}"
+        # ทำความสะอาด tag html ก่อนส่งให้ AI
+        clean_text = re.sub('<.*?>', '', raw_description)
+        prompt = f"Summarize this news into 1-2 concise, professional sentences for a business briefing. Title: {title}. Content: {clean_text}"
         response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
@@ -54,27 +55,47 @@ CATEGORIES_CONFIG = {
     "Sports": "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp1ZEdvU0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en"
 }
 
-# --- 5. ฟังก์ชันดึงภาพที่ชัดที่สุด ---
+# --- 5. ฟังก์ชันดึงภาพที่ชัดที่สุด (V.2 ปรับปรุงใหม่) ---
 def get_best_image(item, category, title):
     image_url = ""
-    # 1. ลองดึงจาก Media Tags (BBC, CNBC)
-    media = item.find('media:content') or item.find('media:thumbnail') or item.find('enclosure')
-    if media and media.get('url'):
-        image_url = media.get('url')
     
-    # 2. ลองดึงจาก Summary (Google News)
+    # 1. ลองดึงจาก Media Tags แบบครอบคลุม (BBC, CNBC, Verge)
+    media_tags = [
+        item.find('media:content'), 
+        item.find('media:thumbnail'), 
+        item.find('enclosure'),
+        item.find('image')
+    ]
+    
+    for tag in media_tags:
+        if tag and tag.get('url'):
+            image_url = tag.get('url')
+            break
+
+    # 2. ถ้ายังไม่เจอ ลองดึงจากใน Description (Google News มักแอบไว้ที่นี่)
     if not image_url and item.description:
-        img_match = re.search(r'<img [^>]*src="([^"]+)"', item.description.text)
+        img_match = re.search(r'<img [^>]*src=["\']([^"\']+)["\']', item.description.text)
         if img_match: 
             image_url = img_match.group(1)
-            if image_url.startswith('//'): image_url = 'https:' + image_url
 
-    # 3. ถ้าไม่เจอ ใช้ Unsplash HD แบบระบุ Keyword
-    if not image_url or "doubleclick" in image_url:
-        safe_sig = re.sub(r'\W+', '', title[:15]) 
-        keywords = {"Business": "business", "Tech": "technology", "World News": "world", "Sports": "sports"}
+    # ปรับแต่ง URL (ถ้ามาแค่ // หรือเป็นพิกเซลจิ๋วของโฆษณา)
+    if image_url:
+        if image_url.startswith('//'): 
+            image_url = 'https:' + image_url
+        if "doubleclick" in image_url or "pixel" in image_url:
+            image_url = ""
+
+    # 3. (Fallback) ถ้าไม่เจอรูปจริงๆ ให้ใช้รูปจาก Unsplash ตามหมวดหมู่เพื่อให้แอปสวยงาม
+    if not image_url:
+        keywords = {
+            "Business": "business,finance",
+            "Tech": "technology,gadget",
+            "World News": "global,news",
+            "Sports": "stadium,sport"
+        }
         query = keywords.get(category, "news")
-        image_url = f"https://images.unsplash.com/photo-1504711434969-e33886168f5c?auto=format&fit=crop&w=1080&q=80" 
+        # ใช้ Unsplash Source แบบระบุคำค้นหา
+        image_url = f"https://images.unsplash.com/photo-1504711434969-e33886168f5c?auto=format&fit=crop&w=800&q=80&sig={category}"
         
     return image_url
 
@@ -85,12 +106,13 @@ def fetch_and_upload():
         print(f"\n🚀 Fetching: {category}")
         try:
             response = requests.get(url, timeout=15)
+            # ใช้ lxml parser สำหรับความเร็วและแม่นยำ
             soup = BeautifulSoup(response.content, features="xml")
             items = soup.find_all('item', limit=8)
 
             for item in items:
                 title = item.title.text.strip()
-                # ป้องกันข่าวซ้ำโดยใช้ชื่อข่าวเป็น ID
+                # ทำความสะอาด ID ให้ปลอดภัย
                 doc_id = re.sub(r'[^a-zA-Z0-9]', '', title)[:60]
                 doc_ref = db.collection("news").document(doc_id)
 
@@ -109,9 +131,11 @@ def fetch_and_upload():
                         "image_url": final_image_url
                     })
                     print(f"✅ Added: {title[:40]}...")
+                else:
+                    print(f"⏩ Skipped: {title[:40]}...")
         except Exception as e:
             print(f"❌ Error in {category}: {e}")
 
 if __name__ == "__main__":
     fetch_and_upload()
-    print("\n✨ Done!")
+    print("\n✨ All tasks completed!")
