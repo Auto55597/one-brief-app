@@ -8,15 +8,13 @@ from firebase_admin import credentials, firestore
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 
-# --- 1. ตั้งค่าการเชื่อมต่อ (Firebase & Gemini) ---
+# --- 1. การเชื่อมต่อ ---
 GEMINI_KEY = os.environ.get('GEMINI_API_KEY') or "AIzaSyBaY_QEe3oocCVHQhYlok40RGBa3D9uHrE"
 
 if os.environ.get('FIREBASE_SERVICE_ACCOUNT'):
-    # สำหรับรันบน GitHub Actions
     cert_dict = json.loads(os.environ.get('FIREBASE_SERVICE_ACCOUNT'))
     cred = credentials.Certificate(cert_dict)
 else:
-    # สำหรับรันในเครื่องคอมพิวเตอร์ (D:)
     cred = credentials.Certificate("serviceAccountKey.json")
 
 if not firebase_admin._apps:
@@ -26,28 +24,26 @@ db = firestore.client()
 genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# --- 2. ฟังก์ชัน AI สรุปข่าว ---
+# --- 2. AI สรุปข่าวแบบ "Short & Punchy" (เน้นกระชับเพื่อ User) ---
 def ai_summarize(title, raw_description):
     try:
-        # ทำความสะอาด tag html ก่อนส่งให้ AI
-        clean_text = re.sub('<.*?>', '', raw_description)
-        prompt = f"Summarize this news into 1-2 concise, professional sentences for a business briefing. Title: {title}. Content: {clean_text}"
+        clean_text = re.sub('<.*?>', '', raw_description)[:500]
+        # สั่ง AI ให้สรุปสั้นเป็นพิเศษ ไม่เกิน 15-20 คำ
+        prompt = f"Summarize this news in ONE very short, punchy sentence (max 15 words). Focus on 'What happened'. Title: {title}. Content: {clean_text}"
         response = model.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        print(f"⚠️ AI Summary failed: {e}")
-        return re.sub('<.*?>', '', raw_description)[:200] + "..."
+        summary = response.text.strip()
+        return summary if len(summary) > 10 else f"Quick update on: {title}"
+    except:
+        return title[:100] + "..."
 
-# --- 3. ฟังก์ชันลบข่าวเก่า (เกิน 48 ชม.) ---
+# --- 3. ล้างข่าวเก่า ---
 def delete_old_news():
-    print("🧹 Cleaning up news older than 48 hours...")
     threshold = datetime.now(timezone.utc) - timedelta(hours=48)
     old_docs = db.collection("news").where("timestamp", "<", threshold).get()
     for doc in old_docs:
         doc.reference.delete()
-    print(f"🗑️ Cleanup complete.")
 
-# --- 4. แหล่งข่าว (RSS Feeds) ---
+# --- 4. แหล่งข่าว ---
 CATEGORIES_CONFIG = {
     "Business": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
     "Tech": "https://www.theverge.com/rss/index.xml",
@@ -55,71 +51,47 @@ CATEGORIES_CONFIG = {
     "Sports": "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp1ZEdvU0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en"
 }
 
-# --- 5. ฟังก์ชันดึงภาพที่ชัดที่สุด (V.2 ปรับปรุงใหม่) ---
-def get_best_image(item, category, title):
+# --- 5. ค้นหารูปภาพ (แบบเข้มข้น) ---
+def get_best_image(item, category):
     image_url = ""
-    
-    # 1. ลองดึงจาก Media Tags แบบครอบคลุม (BBC, CNBC, Verge)
-    media_tags = [
-        item.find('media:content'), 
-        item.find('media:thumbnail'), 
-        item.find('enclosure'),
-        item.find('image')
-    ]
-    
-    for tag in media_tags:
+    # เช็กทุก Tag ที่น่าจะมีรูป
+    tags = [item.find('media:content'), item.find('media:thumbnail'), item.find('enclosure')]
+    for tag in tags:
         if tag and tag.get('url'):
             image_url = tag.get('url')
             break
-
-    # 2. ถ้ายังไม่เจอ ลองดึงจากใน Description (Google News มักแอบไว้ที่นี่)
+            
     if not image_url and item.description:
         img_match = re.search(r'<img [^>]*src=["\']([^"\']+)["\']', item.description.text)
-        if img_match: 
-            image_url = img_match.group(1)
+        if img_match: image_url = img_match.group(1)
 
-    # ปรับแต่ง URL (ถ้ามาแค่ // หรือเป็นพิกเซลจิ๋วของโฆษณา)
-    if image_url:
-        if image_url.startswith('//'): 
-            image_url = 'https:' + image_url
-        if "doubleclick" in image_url or "pixel" in image_url:
-            image_url = ""
-
-    # 3. (Fallback) ถ้าไม่เจอรูปจริงๆ ให้ใช้รูปจาก Unsplash ตามหมวดหมู่เพื่อให้แอปสวยงาม
-    if not image_url:
-        keywords = {
-            "Business": "business,finance",
-            "Tech": "technology,gadget",
-            "World News": "global,news",
-            "Sports": "stadium,sport"
-        }
-        query = keywords.get(category, "news")
-        # ใช้ Unsplash Source แบบระบุคำค้นหา
+    if image_url and image_url.startswith('//'): image_url = 'https:' + image_url
+    
+    # ถ้าไม่มีรูปจริงๆ ให้ใช้รูปจาก Unsplash ที่ดูเหมือนข่าวจริงที่สุด (High Quality)
+    if not image_url or "doubleclick" in image_url or "pixel" in image_url:
+        kw = {"Business": "office,finance", "Tech": "gadget,digital", "World News": "news,city", "Sports": "stadium"}
+        query = kw.get(category, "news")
         image_url = f"https://images.unsplash.com/photo-1504711434969-e33886168f5c?auto=format&fit=crop&w=800&q=80&sig={category}"
         
     return image_url
 
-# --- 6. กระบวนการหลัก ---
+# --- 6. รันระบบ ---
 def fetch_and_upload():
     delete_old_news()
     for category, url in CATEGORIES_CONFIG.items():
-        print(f"\n🚀 Fetching: {category}")
         try:
-            response = requests.get(url, timeout=15)
-            # ใช้ lxml parser สำหรับความเร็วและแม่นยำ
+            response = requests.get(url, timeout=10)
             soup = BeautifulSoup(response.content, features="xml")
-            items = soup.find_all('item', limit=8)
+            items = soup.find_all('item', limit=10)
 
             for item in items:
                 title = item.title.text.strip()
-                # ทำความสะอาด ID ให้ปลอดภัย
                 doc_id = re.sub(r'[^a-zA-Z0-9]', '', title)[:60]
                 doc_ref = db.collection("news").document(doc_id)
 
                 if not doc_ref.get().exists:
-                    raw_desc = item.description.text if item.description else ""
-                    summary = ai_summarize(title, raw_desc)
-                    final_image_url = get_best_image(item, category, title)
+                    summary = ai_summarize(title, item.description.text if item.description else "")
+                    img = get_best_image(item, category)
                     
                     doc_ref.set({
                         "title": title,
@@ -128,14 +100,11 @@ def fetch_and_upload():
                         "category": category,
                         "link": item.link.text.strip() if item.link else "",
                         "timestamp": datetime.now(timezone.utc),
-                        "image_url": final_image_url
+                        "image_url": img
                     })
-                    print(f"✅ Added: {title[:40]}...")
-                else:
-                    print(f"⏩ Skipped: {title[:40]}...")
+                    print(f"✅ Added: {title[:30]}")
         except Exception as e:
-            print(f"❌ Error in {category}: {e}")
+            print(f"❌ Error {category}: {e}")
 
 if __name__ == "__main__":
     fetch_and_upload()
-    print("\n✨ All tasks completed!")
