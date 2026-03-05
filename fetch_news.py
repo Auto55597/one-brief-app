@@ -9,19 +9,22 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 
 # --- 1. ตั้งค่าการเชื่อมต่อ (Firebase & Gemini) ---
-GEMINI_KEY = "AIzaSyBaY_QEe3oocCVHQhYlok40RGBa3D9uHrE"
+GEMINI_KEY = os.environ.get('GEMINI_API_KEY') or "AIzaSyBaY_QEe3oocCVHQhYlok40RGBa3D9uHrE"
 
 if os.environ.get('FIREBASE_SERVICE_ACCOUNT'):
+    # สำหรับรันบน GitHub Actions
     cert_dict = json.loads(os.environ.get('FIREBASE_SERVICE_ACCOUNT'))
     cred = credentials.Certificate(cert_dict)
-    genai.configure(api_key=os.environ.get('GEMINI_API_KEY') or GEMINI_KEY)
 else:
-    cred = credentials.Certificate("one-brief-app-firebase-adminsdk-fbsvc-7ec5c36c40.json")
-    genai.configure(api_key=GEMINI_KEY)
+    # สำหรับรันในเครื่องคอมพิวเตอร์ (D:)
+    # ตรวจสอบว่าไฟล์ชื่อ serviceAccountKey.json อยู่ในโฟลเดอร์เดียวกับไฟล์นี้
+    cred = credentials.Certificate("serviceAccountKey.json")
 
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
 db = firestore.client()
+
+genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- 2. ฟังก์ชัน AI สรุปข่าว ---
@@ -32,101 +35,83 @@ def ai_summarize(title, raw_description):
         return response.text.strip()
     except Exception as e:
         print(f"⚠️ AI Summary failed: {e}")
-        cleanr = re.compile('<.*?>')
-        text = re.sub(cleanr, '', raw_description)
-        return text[:200] + "..."
+        return re.sub('<.*?>', '', raw_description)[:200] + "..."
 
-# --- 3. ฟังก์ชันลบข่าวเก่า ---
+# --- 3. ฟังก์ชันลบข่าวเก่า (เกิน 48 ชม.) ---
 def delete_old_news():
     print("🧹 Cleaning up news older than 48 hours...")
     threshold = datetime.now(timezone.utc) - timedelta(hours=48)
     old_docs = db.collection("news").where("timestamp", "<", threshold).get()
-    count = 0
     for doc in old_docs:
         doc.reference.delete()
-        count += 1
-    print(f"🗑️ Deleted {count} old articles.")
+    print(f"🗑️ Cleanup complete.")
 
 # --- 4. แหล่งข่าว (RSS Feeds) ---
 CATEGORIES_CONFIG = {
-    "Business": ["https://www.cnbc.com/id/10001147/device/rss/rss.html"],
-    "Tech": ["https://techcrunch.com/feed/"],
-    "World News": ["http://feeds.bbci.co.uk/news/world/rss.xml"]
+    "Business": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
+    "Tech": "https://www.theverge.com/rss/index.xml",
+    "World News": "http://feeds.bbci.co.uk/news/world/rss.xml",
+    "Sports": "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp1ZEdvU0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en"
 }
 
-# --- 5. ฟังก์ชันดึงภาพ (เน้นความคมชัดและความไม่ซ้ำ) ---
-def get_image_from_item(item, category, title):
-    image_url = None
-    
-    # 1. ลองหาจาก <media:content> หรือ <media:thumbnail>
-    media = item.find('media:content') or item.find('media:thumbnail') or item.find('content')
+# --- 5. ฟังก์ชันดึงภาพที่ชัดที่สุด ---
+def get_best_image(item, category, title):
+    image_url = ""
+    # 1. ลองดึงจาก Media Tags (BBC, CNBC)
+    media = item.find('media:content') or item.find('media:thumbnail') or item.find('enclosure')
     if media and media.get('url'):
         image_url = media.get('url')
     
-    # 2. ถ้าไม่เจอ ลองหาจาก <enclosure>
-    if not image_url:
-        enclosure = item.find('enclosure')
-        if enclosure and enclosure.get('url'):
-            image_url = enclosure.get('url')
-            
-    # 3. กรณีไม่เจอภาพจริง ให้ใช้ Unsplash แบบระบุความละเอียด (1080x720) และ Signature ไม่ให้ซ้ำ
-    if not image_url:
-        # สร้าง ID สุ่มจากชื่อข่าว (เอาเฉพาะตัวอักษร 15 ตัวแรก)
+    # 2. ลองดึงจาก Summary (Google News)
+    if not image_url and item.description:
+        img_match = re.search(r'<img [^>]*src="([^"]+)"', item.description.text)
+        if img_match: 
+            image_url = img_match.group(1)
+            if image_url.startswith('//'): image_url = 'https:' + image_url
+
+    # 3. ถ้าไม่เจอ ใช้ Unsplash HD แบบระบุ Keyword
+    if not image_url or "doubleclick" in image_url:
         safe_sig = re.sub(r'\W+', '', title[:15]) 
-        keywords = {
-            "Business": "business,finance,trading",
-            "Tech": "technology,coding,digital",
-            "World News": "world,map,city"
-        }
+        keywords = {"Business": "business", "Tech": "technology", "World News": "world", "Sports": "sports"}
         query = keywords.get(category, "news")
-        
-        # เพิ่มขนาด 1080x720 เพื่อความคมชัด และพ่วง &sig เพื่อให้แต่ละข่าวได้ภาพต่างกัน
-        image_url = f"https://source.unsplash.com/featured/1080x720?{query}&sig={safe_sig}"
+        image_url = f"https://images.unsplash.com/photo-1504711434969-e33886168f5c?auto=format&fit=crop&w=1080&q=80" 
         
     return image_url
 
 # --- 6. กระบวนการหลัก ---
 def fetch_and_upload():
     delete_old_news()
-    
-    for category, urls in CATEGORIES_CONFIG.items():
-        print(f"\n🚀 Category: {category}")
-        for url in urls:
-            try:
-                response = requests.get(url, timeout=15)
-                soup = BeautifulSoup(response.content, features="xml")
-                items = soup.find_all('item', limit=5)
+    for category, url in CATEGORIES_CONFIG.items():
+        print(f"\n🚀 Fetching: {category}")
+        try:
+            response = requests.get(url, timeout=15)
+            soup = BeautifulSoup(response.content, features="xml")
+            items = soup.find_all('item', limit=8)
 
-                for item in items:
-                    title = item.title.text.strip()
+            for item in items:
+                title = item.title.text.strip()
+                # ป้องกันข่าวซ้ำโดยใช้ชื่อข่าวเป็น ID
+                doc_id = re.sub(r'[^a-zA-Z0-9]', '', title)[:60]
+                doc_ref = db.collection("news").document(doc_id)
+
+                if not doc_ref.get().exists:
+                    raw_desc = item.description.text if item.description else ""
+                    summary = ai_summarize(title, raw_desc)
+                    final_image_url = get_best_image(item, category, title)
                     
-                    # เช็คข่าวซ้ำ
-                    duplicate = db.collection("news").where("title", "==", title).limit(1).get()
-                    if len(duplicate) == 0:
-                        raw_desc = item.description.text if item.description else ""
-                        summary = ai_summarize(title, raw_desc)
-                        
-                        # ดึงภาพ (ส่ง title ไปด้วยเพื่อสุ่มภาพไม่ซ้ำ)
-                        final_image_url = get_image_from_item(item, category, title)
-                        
-                        data = {
-                            "title": title,
-                            "summary": summary,
-                            "source": url.split('/')[2].replace('www.', ''),
-                            "category": category,
-                            "link": item.link.text.strip(),
-                            "timestamp": datetime.now(timezone.utc),
-                            "image_url": final_image_url
-                        }
-                        db.collection("news").add(data)
-                        
-                        source_type = "Real" if "unsplash" not in final_image_url else "Random HD"
-                        print(f"✅ Added: {title[:50]}... ({source_type})")
-                    else:
-                        print(f"⏩ Skipped: {title[:30]} (Duplicate)")
-            except Exception as e:
-                print(f"❌ Error fetching {url}: {e}")
+                    doc_ref.set({
+                        "title": title,
+                        "summary": summary,
+                        "source": url.split('/')[2].replace('www.', ''),
+                        "category": category,
+                        "link": item.link.text.strip() if item.link else "",
+                        "timestamp": datetime.now(timezone.utc),
+                        "image_url": final_image_url
+                    })
+                    print(f"✅ Added: {title[:40]}...")
+        except Exception as e:
+            print(f"❌ Error in {category}: {e}")
 
 if __name__ == "__main__":
     fetch_and_upload()
-    print("\n✨ Process Complete!")
+    print("\n✨ Done!")

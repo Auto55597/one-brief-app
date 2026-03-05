@@ -1,29 +1,28 @@
-name: Global News Auto-Fetch
+name: Update News to Firebase
 
 on:
   schedule:
-    - cron: '0 */3 * * *' # รันทุก 3 ชั่วโมง (เวลาสากล UTC)
-  workflow_dispatch: # ปุ่มกดรันเองเพื่อทดสอบ
+    - cron: '0 * * * *'  # รันทุกต้นชั่วโมง
+  workflow_dispatch:      # ปุ่มกดรันเองหน้าเว็บ GitHub
 
 jobs:
-  update_news:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Install Libraries
-        run: pip install firebase-admin requests beautifulsoup4 lxml google-generativeai
+      - name: Install dependencies
+        run: |
+          pip install requests firebase-admin google-generativeai beautifulsoup4 lxml
 
-      - name: Run Fetch Script
+      - name: Run Scraper
         env:
-          # เชื่อมต่อความลับจาก GitHub Settings เข้ากับโค้ด Python
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          # เพิ่มบรรทัดนี้เพื่อให้ AI สรุปข่าวทำงานได้ไร้รอยต่อ
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} 
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python fetch_news.py

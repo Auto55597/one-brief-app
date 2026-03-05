@@ -1,0 +1,5 @@
+requests
+firebase-admin
+google-generativeai
+beautifulsoup4
+lxml

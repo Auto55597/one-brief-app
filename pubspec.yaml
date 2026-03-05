@@ -1,0 +1,45 @@
+name: one_brief
+description: "Professional Business News Briefing App"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  flutter_inappwebview: ^6.0.0
+  share_plus: ^7.2.1
+  url_launcher: ^6.2.1
+  http: ^1.1.0
+  firebase_core: any
+  firebase_auth: any
+  cloud_firestore: any
+  google_sign_in: ^6.2.1
+  intl: ^0.20.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  # เพิ่มเครื่องมือสร้างไอคอน
+  flutter_launcher_icons: ^0.13.1
+
+# --- ส่วนตั้งค่าไอคอน (Icon Configuration) ---
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/images/one_brief_logo.png"
+  adaptive_icon_background: "#F44336"
+  adaptive_icon_foreground: "assets/images/one_brief_logo.png"
+
+flutter:
+  uses-material-design: true
+
+  # ต้องเปิดใช้งานโฟลเดอร์ assets เพื่อให้ระบบมองเห็นรูปไอคอน
+  assets:
+    - assets/
+
